@@ -8,6 +8,8 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
@@ -16,11 +18,11 @@ namespace YMPlayer
 {
     class Program
     {
-        private static YMParser _ymParser = null;
+        private static YMModule _ymModule = null;
         private static SerialPort _serialPort = null;
         private static FramePump _pump;
 
-        private static string[] _songArray = null;
+        private static string[][] _modules;
         private static int _songIndex = 0;
         private static int _frameIndex = 0;
 
@@ -33,14 +35,17 @@ namespace YMPlayer
             string startupPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             string songsPath = Path.Combine(startupPath, "Songs");
 
-            _songArray = Directory.GetFiles(songsPath, "*.YM");
+            string[] fileArray = Directory.GetFiles(songsPath, "*.YM");
             /* _songArray = new string[]
             {
                 Path.Combine(songsPath, "LEDSTRM2.YM")
             }; */
 
             Random random = new Random();
-            _songArray = _songArray.OrderBy(x => random.Next()).ToArray();
+            _modules = fileArray
+                .GroupBy(path => Regex.Replace(Path.GetFileName(path), @"\.\d\.ym$", "", RegexOptions.IgnoreCase))
+                .Select(g => g.OrderBy(f => f).ToArray())
+                .ToArray();
 
             Console.WriteLine("YMPlayer, simple streamer for YM2149.");
             Console.WriteLine("Press a key to Exit.");
@@ -58,9 +63,11 @@ namespace YMPlayer
             SendRegisters(1, _emptyRegisters);
             SendRegisters(2, _emptyRegisters);
 
-            _ymParser = new YMParser(_songArray[_songIndex]);
+            _songIndex = random.Next(_modules.Length);
 
-            OutputYmInfo();
+            _ymModule = new YMModule(_modules[_songIndex]);
+
+            _ymModule.OutputInfo();
 
             StartPlayer();
 
@@ -87,7 +94,7 @@ namespace YMPlayer
         {
             _frameIndex = 0;
             _pump?.Dispose();
-            _pump = new FramePump(_ymParser.FrameRate, OnFrame);
+            _pump = new FramePump(_ymModule.FrameRate, OnFrame);
         }
 
         static void SendRegisters(int chipIndex, byte[] registers, int frameIndex = 0)
@@ -104,48 +111,29 @@ namespace YMPlayer
 
         static void OnFrame()
         {
-            SendRegisters(0, _ymParser.Bytes, _frameIndex);
+            _ymModule.SendFrame(_frameIndex, SendRegisters);
 
-            TimeSpan timeSpan = TimeSpan.FromSeconds((double)(_frameIndex + 1) / _ymParser.FrameRate);
-
+            TimeSpan timeSpan = TimeSpan.FromSeconds((double)(_frameIndex + 1) / _ymModule.FrameRate);
             string cur = timeSpan.ToString(@"mm\:ss\.ff");
-            string total = _ymParser.TotalTime.ToString(@"mm\:ss\.ff");
+            string total = _ymModule.TotalTime.ToString(@"mm\:ss\.ff");
 
-            Console.Write($"\r{cur}/{total}  -  Frame {_frameIndex + 1}/{_ymParser.FrameCount}    ");
+            Console.Write($"\r{cur}/{total}  -  Frame {_frameIndex + 1}/{_ymModule.FrameCount}    ");
 
-            if (++_frameIndex >= _ymParser.FrameCount)
+            if (++_frameIndex >= _ymModule.FrameCount)
             {
-                _frameIndex = _ymParser.FrameLoop;
+                _frameIndex = _ymModule.FrameLoop;
 
-                if (++_songIndex == _songArray.Length)
+                if (++_songIndex == _modules.Length)
                     _songIndex = 0;
 
-                SendRegisters(0, _emptyRegisters);
-                SendRegisters(1, _emptyRegisters);
-                SendRegisters(2, _emptyRegisters);
+                for (int i = 0; i < 3; i++)
+                    SendRegisters(i, _emptyRegisters);
 
-                _ymParser = new YMParser(_songArray[_songIndex]);
-
-                OutputYmInfo();
+                _ymModule = new YMModule(_modules[_songIndex]);
+                _ymModule.OutputInfo();
 
                 StartPlayer();
             }
-        }
-
-        private static void OutputYmInfo()
-        {
-            Console.WriteLine("--------------------------------------------");
-            Console.WriteLine("Type: " + _ymParser.Type);
-            Console.WriteLine("Frame Count: " + _ymParser.FrameCount);
-            Console.WriteLine("Song Attributes: " + _ymParser.SongAttributes);
-            Console.WriteLine("Digidrums Samples: " + _ymParser.DigidrumsSamples);
-            Console.WriteLine("YM Frequency: " + _ymParser.YmFrequency + "Hz");
-            Console.WriteLine("Frame Rate: " + _ymParser.FrameRate + "Hz");
-            Console.WriteLine("Loop Frame Number: " + _ymParser.FrameLoop);
-            Console.WriteLine();
-            Console.WriteLine("Title: " + _ymParser.Title);
-            Console.WriteLine("Artist: " + _ymParser.Artist);
-            Console.WriteLine("Comments: " + _ymParser.Comments);
         }
     }
 }

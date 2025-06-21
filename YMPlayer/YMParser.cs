@@ -1,6 +1,6 @@
 ﻿// Original code by Mr Megahertz
 // Url: https://pastebin.com/54nA1EaH
-// Updates by headkaze
+// Updates by benbaker76 (https://github.com/benbaker76)
 
 using System;
 using System.Collections.Generic;
@@ -9,7 +9,6 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-
 using LHADecompressor;
 
 namespace YMPlayer
@@ -18,6 +17,9 @@ namespace YMPlayer
     {
         // http://leonard.oxg.free.fr/ymformat.html
 
+        private readonly bool _isYM6;
+
+        private string _fileName = null;
         private string _type = null;
         private uint _songAttributes = 0;
         private ushort _digidrumsSamples = 0;
@@ -35,69 +37,115 @@ namespace YMPlayer
 
         public YMParser(string fileName)
         {
-            LhaFile lhaFile = new LhaFile(fileName, Encoding.UTF8);
-            LhaEntry lhaEntry = lhaFile.GetEntry(0);
-            byte[] bytes = lhaFile.GetEntryBytes(lhaEntry);
-            lhaFile.Close();
+            _fileName = Path.GetFileName(fileName);
 
-            using (MemoryStream memoryStream = new MemoryStream(bytes))
+            byte[] bytes = File.ReadAllBytes(fileName);
+
+            // Detect compression vs raw
+            bool isRaw = Encoding.ASCII.GetString(bytes, 0, 2) == "YM";
+            if (!isRaw)
             {
-                using (BinaryReader binaryReader = new BinaryReader(memoryStream))
-                {
-                    // Header
-                    ASCIIEncoding encoding = new ASCIIEncoding();
-
-                    _type = encoding.GetString(binaryReader.ReadBytes(4));
-                    string checkString = encoding.GetString(binaryReader.ReadBytes(8));
-
-                    if (!checkString.Equals("LeOnArD!"))
-                        return;
-
-                    _frameCount = (int)SwapByteOrder(binaryReader.ReadUInt32());
-                    _songAttributes = SwapByteOrder(binaryReader.ReadUInt32());
-                    _digidrumsSamples = SwapByteOrder(binaryReader.ReadUInt16());
-                    _ymFrequency = SwapByteOrder(binaryReader.ReadUInt32());
-                    _frameRate = SwapByteOrder(binaryReader.ReadUInt16());
-                    _frameLoop = (int)SwapByteOrder(binaryReader.ReadUInt32());
-
-                    binaryReader.ReadUInt16(); // Unused bytes
-
-                    // Song Info
-                    _title = ReadNullTerminationString(binaryReader, encoding);
-                    _artist = ReadNullTerminationString(binaryReader, encoding);
-                    _comments = ReadNullTerminationString(binaryReader, encoding);
-
-                    // Read interleaved frames
-                    _bytes = ReadAllFrames(binaryReader, _frameCount);
-                }
+                var lha = new LhaFile(fileName, Encoding.UTF8);
+                var entry = lha.GetEntry(0);
+                bytes = lha.GetEntryBytes(entry);
             }
 
-            _totalTime = TimeSpan.FromSeconds((_frameCount / _frameRate));
+            using (var ms = new MemoryStream(bytes))
+            using (var br = new BinaryReader(ms))
+            {
+                var enc = Encoding.ASCII;
+                _type = enc.GetString(br.ReadBytes(4)); // e.g., "YM5!" or "YM6!"
+                _isYM6 = _type == "YM6!";
+                var check = enc.GetString(br.ReadBytes(8));
+                if (check != "LeOnArD!") return;
+
+                _frameCount = (int)SwapByteOrder(br.ReadUInt32());
+                _songAttributes = SwapByteOrder(br.ReadUInt32());
+                _digidrumsSamples = SwapByteOrder(br.ReadUInt16());
+                _ymFrequency = SwapByteOrder(br.ReadUInt32());
+                _frameRate = SwapByteOrder(br.ReadUInt16());
+                _frameLoop = (int)SwapByteOrder(br.ReadUInt32());
+
+                br.ReadUInt16(); // unused / extra data length
+
+                _title = ReadNullTerminationString(br, enc);
+                _artist = ReadNullTerminationString(br, enc);
+                _comments = ReadNullTerminationString(br, enc);
+
+                _bytes = ReadAllFrames(br, _frameCount, _songAttributes);
+            }
+
+            _totalTime = TimeSpan.FromSeconds((double)_frameCount / _frameRate);
         }
 
-        private byte[] ReadAllFrames(BinaryReader reader, int frameCount)
+        public IEnumerable<EffectInfo> GetEffects(int frame)
         {
-            int totalBytes = 16 * frameCount;
-            int currentRegisterStreamSize = totalBytes / 16;
+            if (!_isYM6) yield break;
 
-            byte[] tempArray = new byte[totalBytes];
-            byte[] finalArray = new byte[totalBytes];
+            byte r1 = _bytes[frame * 16 + 1];
+            byte r3 = _bytes[frame * 16 + 3];
+            byte r6 = _bytes[frame * 16 + 6];
+            byte r8 = _bytes[frame * 16 + 8];
+            byte r14 = _bytes[frame * 16 + 14];
+            byte r15 = _bytes[frame * 16 + 15];
 
-            tempArray = reader.ReadBytes(totalBytes);
+            var e1 = DecodeEffectFrame(r1, r6, r14);
+            if (e1 != null) yield return e1.Value;
 
-            byte currentValue;
+            var e2 = DecodeEffectFrame(r3, r8, r15);
+            if (e2 != null) yield return e2.Value;
+        }
 
-            for (int currentRegister = 0; currentRegister < 16; currentRegister++)
+        private EffectInfo? DecodeEffectFrame(byte flagReg, byte timer1, byte timer2)
+        {
+            int type = (flagReg >> 6) & 0x3;
+            if (type == 0) return null;
+
+            int voice = (flagReg >> 4) & 0x3;
+            int timer = ((flagReg & 0xF) << 8) | timer1;
+            int volume = timer2; // depending on effect type
+
+            return new EffectInfo { Voice = voice, Type = type, Timer = timer, Volume = volume };
+        }
+
+        public struct EffectInfo
+        {
+            public int Voice, Type, Timer, Volume;
+            public override string ToString() =>
+                $"Voice {Voice}, Type {Type}, Timer {Timer}, Volume {Volume}";
+        }
+
+        private byte[] ReadAllFrames(BinaryReader reader, int frames, uint songAttributes)
+        {
+            // Total bytes for 16 registers × frame count
+            int totalBytes = 16 * frames;
+            byte[] raw = reader.ReadBytes(totalBytes);
+
+            // Bit 0 of SongAttributes:
+            // 1 = interleaved (YM3/YM5-style), 0 = non-interleaved (frame-major) :contentReference[oaicite:1]{index=1}
+            bool interleaved = (songAttributes & 1) != 0;
+
+            if (!interleaved)
             {
+                // Data is already in [frame0 regs0–15][frame1 regs0–15]… format
+                return raw;
+            }
 
-                int offset = (currentRegisterStreamSize * (currentRegister));
-                for (int i = 0; i < currentRegisterStreamSize; i++)
+            // De-interleave into frame-major format
+            byte[] output = new byte[totalBytes];
+            int framesPerReg = frames;
+
+            for (int reg = 0; reg < 16; reg++)
+            {
+                for (int f = 0; f < framesPerReg; f++)
                 {
-                    currentValue = tempArray[i + offset];
-                    finalArray[16 * i + currentRegister] = currentValue;
+                    int srcIndex = reg * framesPerReg + f;
+                    int destIndex = f * 16 + reg;
+                    output[destIndex] = raw[srcIndex];
                 }
             }
-            return finalArray;
+
+            return output;
         }
 
         private string ReadNullTerminationString(BinaryReader reader, Encoding encoding)
@@ -141,6 +189,8 @@ namespace YMPlayer
             return (ushort)swapped;
         }
 
+        public bool IsYM6 => _isYM6;
+        public string FileName { get { return _fileName; } }
         public string Type { get { return _type; } }
         public uint SongAttributes { get { return _songAttributes; } }
         public ushort DigidrumsSamples { get { return _digidrumsSamples; } }

@@ -420,5 +420,6 @@ FodyWeavers.xsd
 !YMPlayer/
 !YMPlayer/bin/
 !YMPlayer/bin/Debug/
-!YMPlayer/bin/Debug/Songs/
-!YMPlayer/bin/Debug/Songs/**
+!YMPlayer/bin/Debug/net8.0/
+!YMPlayer/bin/Debug/net8.0/Songs/
+!YMPlayer/bin/Debug/net8.0/Songs/**

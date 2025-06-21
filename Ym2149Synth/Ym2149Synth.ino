@@ -24,7 +24,7 @@
  * Define BENCHMARK to run benchmarking (Look to method "benchmark" SynthController.cpp)
  */
 //#define BENCHMARK 1
-//#define YMPLAYER 1
+#define YMPLAYER 1
 
 #include <TimerOne.h>
 #include "YM2149.h"
