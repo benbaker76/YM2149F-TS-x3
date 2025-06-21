@@ -106,6 +106,10 @@ namespace YMPlayer
             data[0] = (byte)chipIndex;
             Array.Copy(registers, frameIndex * PACKET_SIZE, data, 1, PACKET_SIZE);
 
+            // Write bytes in hex to console for debugging
+            //string hex = BitConverter.ToString(data).Replace("-", " ");
+            //Console.WriteLine($"Chip: {chipIndex} Frame: {frameIndex}: {hex}");
+
             _serialPort.Write(data, 0, PACKET_SIZE + 1);
         }
 
