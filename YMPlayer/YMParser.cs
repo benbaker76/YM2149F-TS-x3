@@ -16,8 +16,10 @@ namespace YMPlayer
         public enum EffectType
         {
             None = 0,
-            TimerSynth = 1,
-            DigiDrum = 2
+            SIDVoice = 1,
+            DigiDrum = 2,
+            SinusSID = 3,
+            SyncBuzzer = 4,
         }
 
         private readonly bool _isYM6;
@@ -152,13 +154,13 @@ namespace YMPlayer
             /* ----- which effect?  ----- */
             EffectType type = flagR switch
             {
-                1 => EffectType.TimerSynth,        // slot‑1 → TS
+                1 => EffectType.SIDVoice,        // slot‑1 → TS
                 3 => EffectType.DigiDrum,          // slot‑2 → DD
                 _ => EffectType.None               // should never happen
             };
 
             /* ----- extra flags ----- */
-            bool restart = (type == EffectType.TimerSynth) && ((flag & 0x40) != 0);
+            bool restart = (type == EffectType.SIDVoice) && ((flag & 0x40) != 0);
 
             /* ----- timer values ----- */
             int divisor = (_bytes[baseIdx + timerR] >> 5) & 0x07;   // TP (3 bits)

@@ -104,7 +104,7 @@ namespace YMPlayer
         {
             switch (fx.Type)
             {
-                case EffectType.TimerSynth:
+                case EffectType.SIDVoice:
                     Console.WriteLine(fx.ToString());
                     //TimerSynth.SetVoice(fx.Voice, fx.TimerDivisor, fx.TimerCount);
                     break;
