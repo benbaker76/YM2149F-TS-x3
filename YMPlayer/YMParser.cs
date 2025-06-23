@@ -1,6 +1,4 @@
-﻿// Original code by Mr Megahertz
-// Url: https://pastebin.com/54nA1EaH
-// Updates by benbaker76 (https://github.com/benbaker76)
+﻿// benbaker76 (https://github.com/benbaker76)
 
 using System;
 using System.Collections.Generic;
@@ -15,86 +13,93 @@ namespace YMPlayer
 {
     public class YMParser
     {
-        // http://leonard.oxg.free.fr/ymformat.html
+        public enum EffectType
+        {
+            None = 0,
+            TimerSynth = 1,
+            DigiDrum = 2
+        }
 
         private readonly bool _isYM6;
 
-        private string _fileName = null;
-        private string _type = null;
-        private uint _songAttributes = 0;
-        private ushort _digidrumsSamples = 0;
-        private uint _ymFrequency = 0;
-
-        private string _title = null;
-        private string _artist = null;
-        private string _comments = null;
-
-        private int _frameCount = 0;
-        private int _frameLoop = 0;
-        private int _frameRate = 0;
+        private string _fileName;
+        private string _type;
+        private uint _songAttributes;
+        private ushort _digidrumsSamples;
+        private uint _ymFrequency;
+        private string _title, _artist, _comments;
+        private int _frameCount, _frameLoop, _frameRate;
         private TimeSpan _totalTime;
-        private byte[] _bytes = null;
+        private byte[] _bytes;
 
         public YMParser(string fileName)
         {
+            _fileName = fileName;
             byte[] data = File.ReadAllBytes(fileName);
-            bool isRaw = Encoding.ASCII.GetString(data, 0, 3) == "YM5" || Encoding.ASCII.GetString(data, 0, 3) == "YM6" || Encoding.ASCII.GetString(data, 0, 3).StartsWith("YM3") || Encoding.ASCII.GetString(data, 0, 3).StartsWith("YM4");
+            bool isRaw = Encoding.ASCII.GetString(data, 0, 4).StartsWith("YM");
             if (!isRaw)
             {
                 var lha = new LhaFile(fileName, Encoding.UTF8);
-                var entry = lha.GetEntry(0);
-                data = lha.GetEntryBytes(entry);
+                data = lha.GetEntryBytes(lha.GetEntry(0));
             }
 
             using var br = new BinaryReader(new MemoryStream(data), Encoding.ASCII, false);
-            _type = new string(br.ReadChars(4)); // "YM3!", "YM3b", "YM4!", "YM5!", "YM6!"
+            _type = new string(br.ReadChars(4));
 
             if (_type == "YM3b")
             {
-                long payloadSize = data.Length - 8;
-                _frameCount = (int)(payloadSize / 14);
+                int primitiveFrames = (data.Length - 8) / 14;
+                _frameCount = primitiveFrames;
                 byte[] raw = br.ReadBytes(_frameCount * 14);
-                _frameLoop = (int)br.ReadUInt32(); // little-endian
+                _frameLoop = (int)br.ReadUInt32();
 
                 _bytes = new byte[_frameCount * 16];
                 for (int reg = 0; reg < 14; reg++)
-                {
-                    int baseIndex = reg * _frameCount;
                     for (int f = 0; f < _frameCount; f++)
-                    {
-                        _bytes[f * 16 + reg] = raw[baseIndex + f];
-                    }
-                }
+                        _bytes[f * 16 + reg] = raw[reg * _frameCount + f];
+
+                _digidrumsSamples = 0;
+                _ymFrequency = 0;
+                _frameRate = 0;
             }
             else
             {
-                // Standard YM5/YM6 header parsing
                 string check = new string(br.ReadChars(8));
-                if (check != "LeOnArD!") throw new InvalidDataException("Not a YM5/6 file");
-                _frameCount = (int)SwapByteOrder(br.ReadUInt32());
-                _songAttributes = SwapByteOrder(br.ReadUInt32());
-                _digidrumsSamples = SwapByteOrder(br.ReadUInt16());
-                _ymFrequency = SwapByteOrder(br.ReadUInt32());
-                _frameRate = SwapByteOrder(br.ReadUInt16());
-                _frameLoop = (int)SwapByteOrder(br.ReadUInt32());
-                br.ReadUInt16(); // extra data length
+                if (check != "LeOnArD!")
+                    throw new InvalidDataException("Not a valid YM5/YM6 file");
 
-                _title = ReadNullTerminationString(br, Encoding.ASCII);
-                _artist = ReadNullTerminationString(br, Encoding.ASCII);
-                _comments = ReadNullTerminationString(br, Encoding.ASCII);
+                _frameCount = (int)Swap(br.ReadUInt32());
+                _songAttributes = Swap(br.ReadUInt32());
+                _digidrumsSamples = Swap(br.ReadUInt16());
+                _ymFrequency = Swap(br.ReadUInt32());
+                _frameRate = Swap(br.ReadUInt16());
+                _frameLoop = (int)Swap(br.ReadUInt32());
 
-                byte[] raw = br.ReadBytes(16 * _frameCount);
-                if ((_songAttributes & 1) != 0)
-                    _bytes = DeInterleave(raw, _frameCount);
-                else
-                    _bytes = raw;
+                ushort extra = br.ReadUInt16();
+                _title = ReadNullString(br);
+                _artist = ReadNullString(br);
+                _comments = ReadNullString(br);
+
+                if (_digidrumsSamples > 0)
+                {
+                    for (int i = 0; i < _digidrumsSamples; i++)
+                    {
+                        uint size = Swap(br.ReadUInt32());
+                        br.BaseStream.Seek(size, SeekOrigin.Current);
+                    }
+                }
+
+                if (extra > 0)
+                    br.BaseStream.Seek(extra, SeekOrigin.Current);
+
+                _isYM6 = _type == "YM6!";
+
+                byte[] raw = br.ReadBytes(_frameCount * 16);
+                _bytes = ((_songAttributes & 1) != 0) ? DeInterleave(raw, _frameCount) : raw;
             }
 
-            if (_frameRate == 0)
-                _frameRate = 50;
-
-            if (_ymFrequency == 0)
-                _ymFrequency = 2000000; // default to 2 MHz if not specified
+            if (_frameRate == 0) _frameRate = 50;
+            if (_ymFrequency == 0) _ymFrequency = 2000000;
 
             _totalTime = TimeSpan.FromSeconds((double)_frameCount / _frameRate);
         }
@@ -108,83 +113,85 @@ namespace YMPlayer
             return outp;
         }
 
+        private string ReadNullString(BinaryReader br)
+        {
+            var sb = new StringBuilder();
+            byte b;
+            while ((b = br.ReadByte()) != 0)
+                sb.Append((char)b);
+            return sb.ToString();
+        }
+
         public IEnumerable<EffectInfo> GetEffects(int frame)
         {
             if (!_isYM6) yield break;
 
-            byte r1 = _bytes[frame * 16 + 1];
-            byte r3 = _bytes[frame * 16 + 3];
-            byte r6 = _bytes[frame * 16 + 6];
-            byte r8 = _bytes[frame * 16 + 8];
-            byte r14 = _bytes[frame * 16 + 14];
-            byte r15 = _bytes[frame * 16 + 15];
+            // slot‑1  (TS)   : r1 / r6 / r14
+            // slot‑2  (DD)   : r3 / r8 / r15
+            EffectInfo?[] slots =
+            {
+                Decode(frame, 1, 6, 14),
+                Decode(frame, 3, 8, 15)
+            };
 
-            var e1 = DecodeEffectFrame(r1, r6, r14);
-            if (e1 != null) yield return e1.Value;
-
-            var e2 = DecodeEffectFrame(r3, r8, r15);
-            if (e2 != null) yield return e2.Value;
+            foreach (var fx in slots)
+                if (fx.HasValue) yield return fx.Value;
         }
 
-        private EffectInfo? DecodeEffectFrame(byte flagReg, byte timer1, byte timer2)
+        private EffectInfo? Decode(int frame, int flagR, int timerR, int countR)
         {
-            int type = (flagReg >> 6) & 0x3;
-            if (type == 0) return null;
+            int baseIdx = frame * 16;
 
-            int voice = (flagReg >> 4) & 0x3;
-            int timer = ((flagReg & 0xF) << 8) | timer1;
-            int volume = timer2; // depending on effect type
+            byte flag = _bytes[baseIdx + flagR];
 
-            return new EffectInfo { Voice = voice, Type = type, Timer = timer, Volume = volume };
+            /* ----- voice (01=A, 10=B, 11=C) ----- */
+            int vBits  = (flag >> 4) & 0x03;       // r?.5‑4
+            if (vBits == 0) return null;           // no effect in this slot
+            int voice  = vBits - 1;                // 0=A,1=B,2=C
+
+            /* ----- which effect?  ----- */
+            EffectType type = flagR switch
+            {
+                1 => EffectType.TimerSynth,        // slot‑1 → TS
+                3 => EffectType.DigiDrum,          // slot‑2 → DD
+                _ => EffectType.None               // should never happen
+            };
+
+            /* ----- extra flags ----- */
+            bool restart = (type == EffectType.TimerSynth) && ((flag & 0x40) != 0);
+
+            /* ----- timer values ----- */
+            int divisor = (_bytes[baseIdx + timerR] >> 5) & 0x07;   // TP (3 bits)
+            int count   =  _bytes[baseIdx + countR];                // TC (8 bits)
+
+            return new EffectInfo(type, voice, divisor, count, restart);
         }
 
         public struct EffectInfo
         {
-            public int Voice, Type, Timer, Volume;
-            public override string ToString() =>
-                $"Voice {Voice}, Type {Type}, Timer {Timer}, Volume {Volume}";
-        }
+            public EffectType Type;
+            public int Voice;
+            public int TimerDivisor;
+            public int TimerCount;
+            public bool Restart;
 
-        private string ReadNullTerminationString(BinaryReader reader, Encoding encoding)
-        {
-            byte[] temp = new byte[1];
-            StringBuilder stringBuilder = new StringBuilder();
-            while (true)
+            public EffectInfo(EffectType type, int voice, int timerDivisor, int timerCount, bool restart)
             {
-                temp[0] = reader.ReadByte();
-
-                if (temp[0] == 0x00)
-                {
-                    return stringBuilder.ToString();
-                }
-                else
-                {
-                    stringBuilder.Append(encoding.GetString(temp));
-                }
+                Type = type;
+                Voice = voice;
+                TimerDivisor = timerDivisor;
+                TimerCount = timerCount;
+                Restart = restart;
             }
+
+            public override string ToString() =>
+                $"{Type.ToString()} (Voice {Voice}, Div {TimerDivisor}, Count {TimerCount} Restart {Restart})";
         }
 
-        private uint SwapByteOrder(uint valueToSwap)
-        {
-            uint uvalue = valueToSwap;
-            uint swapped =
-                ((0x000000FF) & (uvalue >> 24)
-                | (0x0000FF00) & (uvalue >> 8)
-                | (0x00FF0000) & (uvalue << 8)
-                | (0xFF000000) & (uvalue << 24)
-                );
-            return swapped;
-        }
+        private static uint Swap(uint v) =>
+            (v >> 24) | ((v >> 8) & 0x0000FF00) | ((v << 8) & 0x00FF0000) | (v << 24);
 
-        private ushort SwapByteOrder(ushort valueToSwap)
-        {
-            var uvalue = valueToSwap;
-            var swapped =
-                ((0x00FF) & (uvalue >> 8)
-                | (0xFF00) & (uvalue << 8)
-                );
-            return (ushort)swapped;
-        }
+        private static ushort Swap(ushort v) => (ushort)(((v >> 8) & 0x00FF) | ((v << 8) & 0xFF00));
 
         public bool IsYM6 => _isYM6;
         public string FileName { get { return _fileName; } }

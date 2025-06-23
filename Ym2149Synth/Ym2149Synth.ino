@@ -46,7 +46,34 @@ MidiDeviceSerial midi(&Serial1);
 //IntervalTimer eventTimer;
 
 const float sampleRate = 22050;
-const float softSynthTimer = 1000000L/sampleRate;
+const float softSynthTimer = 1000000L / sampleRate;
+
+const unsigned long sidVoiceFreq = 8000; // frequency in Hz
+const unsigned long sidTimer = 1000000UL / sidVoiceFreq;
+
+void updateEffects()
+{
+#ifdef YMPLAYER
+    ymPlayer.updateEffects();
+#endif
+}
+
+ISR(TIMER1_COMPA_vect)
+{
+#ifdef YMPLAYER
+    ymPlayer.updateEffects();
+#endif
+}
+
+void initEffectsTimer()
+{
+    cli();                      // disable IRQ while we mangle Timer1
+    TCCR1A = 0;
+    TCCR1B = _BV(WGM12) | _BV(CS10);      // CTC, prescaler 1
+    OCR1A  = (ISR_PERIOD_US * (F_CPU/1000000UL)) - 1;
+    TIMSK1 = _BV(OCIE1A);                 // enable compare‑A ISR
+    sei();
+}
 
 void updateSoftSynth()
 {
@@ -62,6 +89,10 @@ void setup()
 {
 #ifdef YMPLAYER
     ymPlayer.begin();
+
+    //Timer1.initialize(ISR_PERIOD_US);
+    //Timer1.attachInterrupt(updateEffects);
+    //initEffectsTimer();
 #else
     synth.setChannels(1, 2, 3);
     synth.begin();

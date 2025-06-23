@@ -1,9 +1,12 @@
-﻿using System;
+﻿// benbaker76 (https://github.com/benbaker76)
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using static YMPlayer.YMParser;
 
 namespace YMPlayer
 {
@@ -33,6 +36,14 @@ namespace YMPlayer
                 if (Parsers[chip] != null && frameIndex < Parsers[chip].FrameCount)
                     sendRegisters(chip, Parsers[chip].Bytes, frameIndex);
             }
+        }
+
+        public IEnumerable<EffectInfo> GetEffects(int chipIndex, int frameIndex)
+        {
+            if (chipIndex < 0 || chipIndex >= Parsers.Length || Parsers[chipIndex] == null)
+                return null;
+
+            return Parsers[chipIndex].GetEffects(frameIndex);
         }
 
         public void OutputInfo()

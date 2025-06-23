@@ -1,4 +1,6 @@
-﻿using System;
+﻿// benbaker76 (https://github.com/benbaker76)
+
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -13,6 +15,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
+using static YMPlayer.YMParser;
 
 namespace YMPlayer
 {
@@ -97,6 +100,21 @@ namespace YMPlayer
             _pump = new FramePump(_ymModule.FrameRate, OnFrame);
         }
 
+        static void HandleEffect(EffectInfo fx)
+        {
+            switch (fx.Type)
+            {
+                case EffectType.TimerSynth:
+                    Console.WriteLine(fx.ToString());
+                    //TimerSynth.SetVoice(fx.Voice, fx.TimerDivisor, fx.TimerCount);
+                    break;
+                case EffectType.DigiDrum:
+                    Console.WriteLine(fx.ToString());
+                    //DigiDrum.Trigger(fx.Voice, fx.TimerDivisor, fx.TimerCount);
+                    break;
+            }
+        }
+
         static void SendRegisters(int chipIndex, byte[] registers, int frameIndex = 0)
         {
             if (_serialPort == null || !_serialPort.IsOpen)
@@ -111,6 +129,17 @@ namespace YMPlayer
             //Console.WriteLine($"Chip: {chipIndex} Frame: {frameIndex}: {hex}");
 
             _serialPort.Write(data, 0, PACKET_SIZE + 1);
+
+            /* if (_ymModule == null)
+                return;
+
+            var effects = _ymModule.GetEffects(chipIndex, frameIndex);
+
+            if (effects != null)
+            {
+                foreach (var fx in effects)
+                    Console.WriteLine(fx.ToString());
+            } */
         }
 
         static void OnFrame()
