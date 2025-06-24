@@ -27,13 +27,15 @@
 #define YMPLAYER 1
 
 #include <TimerOne.h>
+#include "DigiDrum.h"
 #include "YM2149.h"
 //#include "MidiDeviceUsb.h"
-#include "MidiDeviceSerial.h"
-#include "SynthController.h"
+//#include "MidiDeviceSerial.h"
+//#include "SynthController.h"
 #include "YMPlayerSerial.h"
+#include "UpdateEffects.h"
 
-SynthController synth;
+//SynthController synth;
 
 #ifdef YMPLAYER
 YMPlayerSerial ymPlayer;
@@ -51,31 +53,36 @@ const float softSynthTimer = 1000000L / sampleRate;
 const unsigned long sidVoiceFreq = 8000; // frequency in Hz
 const unsigned long sidTimer = 1000000UL / sidVoiceFreq;
 
-void updateEffects()
+void updateEffectsTimer()
 {
 #ifdef YMPLAYER
     ymPlayer.updateEffects();
+    //updateEffects();
 #endif
 }
 
-ISR(TIMER1_COMPA_vect)
+ISR(TIMER1_COMPA_vect) //, ISR_NAKED)
 {
 #ifdef YMPLAYER
     ymPlayer.updateEffects();
+    //asm volatile("rjmp updateEffects");
+    //updateEffects();
+    //asm volatile ("reti");
 #endif
 }
 
 void initEffectsTimer()
 {
-    cli();                      // disable IRQ while we mangle Timer1
-    TCCR1A = 0;
-    TCCR1B = _BV(WGM12) | _BV(CS10);      // CTC, prescaler 1
-    OCR1A  = (ISR_PERIOD_US * (F_CPU/1000000UL)) - 1;
-    TIMSK1 = _BV(OCIE1A);                 // enable compare‑A ISR
-    sei();
+    noInterrupts();
+    TCCR1A = 0;              // Reset timer mode
+    TCCR1B = _BV(WGM12);     // CTC mode
+    OCR1A  = F_CPU/1000000 * ISR_PERIOD_US - 1;
+    TIMSK1 = _BV(OCIE1A);    // Enable Compare‑Match A interrupt
+    TCNT1  = 0;              // Reset counter
+    interrupts();
 }
 
-void updateSoftSynth()
+/* void updateSoftSynth()
 {
     synth.updateSoftSynths();
 }
@@ -83,7 +90,7 @@ void updateSoftSynth()
 void updateEvents()
 {
     synth.updateEvents();
-}
+} */
 
 void setup()
 {
@@ -91,7 +98,7 @@ void setup()
     ymPlayer.begin();
 
     //Timer1.initialize(ISR_PERIOD_US);
-    //Timer1.attachInterrupt(updateEffects);
+    //Timer1.attachInterrupt(updateEffectsTimer);
     //initEffectsTimer();
 #else
     synth.setChannels(1, 2, 3);

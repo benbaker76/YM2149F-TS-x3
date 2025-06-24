@@ -38,12 +38,22 @@ namespace YMPlayer
             }
         }
 
-        public IEnumerable<EffectInfo> GetEffects(int chipIndex, int frameIndex)
+        public IEnumerable<Effect> GetEffects(int chipIndex, int frameIndex)
         {
             if (chipIndex < 0 || chipIndex >= Parsers.Length || Parsers[chipIndex] == null)
                 return null;
 
             return Parsers[chipIndex].GetEffects(frameIndex);
+        }
+
+        public void UploadDigiDrums()
+        {
+            for (int  i = 0;  i < Parsers[0].DigiDrums.Count;  i++)
+            {
+                var digiDrums = Parsers[0].DigiDrums[i];
+
+                Console.WriteLine($"Uploading DigiDrum {i + 1}: {digiDrums.ToString()}");
+            }
         }
 
         public void OutputInfo()

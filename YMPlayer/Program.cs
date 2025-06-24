@@ -38,7 +38,7 @@ namespace YMPlayer
             string startupPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             string songsPath = Path.Combine(startupPath, "Songs");
 
-            string[] fileArray = Directory.GetFiles(songsPath, "*.YM");
+            string[] fileArray = Directory.GetFiles(songsPath, "*.ym");
             /* _songArray = new string[]
             {
                 Path.Combine(songsPath, "LEDSTRM2.YM")
@@ -70,6 +70,7 @@ namespace YMPlayer
 
             _ymModule = new YMModule(_modules[_songIndex]);
 
+            _ymModule.UploadDigiDrums();
             _ymModule.OutputInfo();
 
             StartPlayer();
@@ -100,16 +101,16 @@ namespace YMPlayer
             _pump = new FramePump(_ymModule.FrameRate, OnFrame);
         }
 
-        static void HandleEffect(EffectInfo fx)
+        static void HandleEffect(Effect fx)
         {
             switch (fx.Type)
             {
                 case EffectType.SIDVoice:
-                    Console.WriteLine(fx.ToString());
+                    Console.WriteLine(((SIDEffect)fx).ToString());
                     //TimerSynth.SetVoice(fx.Voice, fx.TimerDivisor, fx.TimerCount);
                     break;
                 case EffectType.DigiDrum:
-                    Console.WriteLine(fx.ToString());
+                    Console.WriteLine(((DigiDrumEffect)fx).ToString());
                     //DigiDrum.Trigger(fx.Voice, fx.TimerDivisor, fx.TimerCount);
                     break;
             }
@@ -138,7 +139,7 @@ namespace YMPlayer
             if (effects != null)
             {
                 foreach (var fx in effects)
-                    Console.WriteLine(fx.ToString());
+                    HandleEffect(fx);
             } */
         }
 
@@ -163,6 +164,8 @@ namespace YMPlayer
                     SendRegisters(i, _emptyRegisters);
 
                 _ymModule = new YMModule(_modules[_songIndex]);
+
+                _ymModule.UploadDigiDrums();
                 _ymModule.OutputInfo();
 
                 StartPlayer();

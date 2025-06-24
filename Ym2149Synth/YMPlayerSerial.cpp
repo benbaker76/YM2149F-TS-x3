@@ -1,10 +1,13 @@
 // benbaker76 (https://github.com/benbaker76)
 
 #include "YMPlayerSerial.h"
-//#include "DigiDrum.h"
+#include "DigiDrum.h"
 
 // http://leonard.oxg.free.fr/ymformat.html
 // http://lynn3686.com/ym3456_tidy.html
+
+SidState sid[3][3];
+DigiDrumState dd[3][3];
 
 void YMPlayerSerialClass::begin()
 {
@@ -24,52 +27,36 @@ void YMPlayerSerialClass::begin()
 // ──────────────────────────────────────────────────────────────────────────
 // Decode one Timer‑Synth (SIDVoice) or Digi‑Drum slot and update globals
 // ──────────────────────────────────────────────────────────────────────────
-void YMPlayerSerialClass::decodeEffect(uint8_t       chip,
-                                        const uint8_t regs[16],
-                                        uint8_t       flagR,
-                                        uint8_t       timerR,
-                                        uint8_t       countR)
+void YMPlayerSerialClass::decodeEffect(uint8_t chip, const uint8_t regs[16],
+                                       uint8_t flagR, uint8_t timerR, uint8_t countR)
 {
-    const uint8_t flag = regs[flagR];
+    uint8_t flag  = regs[flagR];
+    uint8_t vBits = (flag >> 4) & 0x03;
+    if (vBits == 0) return;
 
-    /*---------------- voice selection (00 = none) ---------------*/
-    const uint8_t vBits = (flag >> 4) & 0x03;      // r?.5‑4
-    if (vBits == 0) return;                        // nothing in this slot
-    const uint8_t v = vBits - 1;                  // 0=A,1=B,2=C
+    uint8_t v = vBits - 1;
+    EffectType type = (flagR == 1) ? EffectType::SIDVoice
+                         : (flagR == 3) ? EffectType::DigiDrum
+                         : EffectType::None;
 
-    /*---------------- which effect lives in this slot? ----------*/
-    EffectType type =
-        (flagR == 1) ? EffectType::TimerSynth     // slot‑1  (R1)
-      : (flagR == 3) ? EffectType::DigiDrum       // slot‑2  (R3)
-                     : EffectType::None;
+    uint8_t tp = (regs[timerR] >> 5) & 0x07;
+    uint8_t tc = regs[countR];
+    uint32_t ticks = uint32_t(tc + 1) * tpMul[tp];
 
-    /*---------------- timer parameters (ST MFP) -----------------*/
-    const uint8_t tp     = (regs[timerR] >> 5) & 0x07;    // TP bits 7‑5
-    const uint8_t tc     =  regs[countR];                 // 8‑bit count
-    const uint32_t ticks = static_cast<uint32_t>(tc + 1) * tpMul[tp];
-
-    /*------------------------------------------------------------*/
-    if (type == EffectType::TimerSynth)          /* == SID square */
-    {
+    if (type == EffectType::SIDVoice) {
         SidState &s = sid[chip][v];
-
-        s.active  = true;
-        s.level   = (tc & 0x1F) > 15 ? 15 : (tc & 0x1F);
-        s.reload  = ticks;
-        s.phase   = ticks;
-        s.toggle  = 0;
-        return;
+        s.active = true;
+        s.level  = min(tc & 0x1F, 15);
+        s.reload = ticks;
+        s.phase  = ticks;
+        s.toggle = 0;
     }
-
-    if (type == EffectType::DigiDrum)
-    {
-        /* 5‑bit sample number is in the volume register of the voice */
-        static const uint8_t volReg[3] = { 8, 9, 10 };
-        const uint8_t sampleNo = regs[volReg[v]] & 0x1F;
-
-        /* dd[...] handling not shown – identical pattern to SidState */
-        (void)sampleNo;      // placeholder to silence “unused” warning
-        return;
+    else if (type == EffectType::DigiDrum) {
+        DigiDrumState &d = dd[chip][v];
+        d.reload = ticks;
+        d.phase  = ticks;
+        d.pos    = 0;
+        d.sample = regs[v + 8] & 0x1F;
     }
 }
 
@@ -82,14 +69,26 @@ void YMPlayerSerialClass::update()
 
     /* static bool played = false;
     if (!played) {
-        Ym.setPortIO(0, 1, 1);
-        Ym.setTone(0, 0, 300);           // Voice A, 300 period
-        Ym.setVolume(0, 0, 0x0F);        // Max volume
-        Ym.setNoise(0, 0, 0);            // Enable tone only
-        played = true;
-    }
+        // Compute tone period for 440 Hz
+        uint16_t period = 2000000 / (16 * 440);
 
-    return; */
+        // Once only (e.g., setup):
+        Ym.setTone(0, 0, period);
+        Ym.setTone(0, 1, period);
+        Ym.setTone(0, 2, period);
+
+        Ym.setVolume(0, 0, 0x08);
+        Ym.setVolume(0, 1, 0x08);
+        Ym.setVolume(0, 2, 0x08);
+
+        Ym.setNoise(0, 0, 1); // tone only on channel A
+        Ym.setNoise(0, 1, 1); // tone only on channel B
+        Ym.setNoise(0, 2, 1); // tone only on channel C
+
+        played = true;
+    } */
+
+    //return;
 
     if (bytesRead == packetSize)
     {
@@ -106,6 +105,12 @@ void YMPlayerSerialClass::update()
         for (int i = 0; i < 14; i++)
             Ym.write(chip, i, regs[i] & regMask[i]);
 
+        //static bool tick = false;
+        //tick = !tick;
+        //Ym.setVolume(0, 0, tick ? 0x0F : 0x00);
+        //Ym.setVolume(0, 1, tick ? 0x0F : 0x00);
+        //Ym.setVolume(0, 2, tick ? 0x0F : 0x00);
+
         decodeEffect(chip, regs, /*flagR*/1, /*timerR*/6,  /*countR*/14);
         decodeEffect(chip, regs, /*flagR*/3, /*timerR*/8,  /*countR*/15);
     }
@@ -121,9 +126,9 @@ void YMPlayerSerialClass::update()
  * -------------------------------------------------------------------- */
 void YMPlayerSerialClass::updateEffects()
 {
-#if USE_BATCH_ISR == 0                 /* ========= 4 µs ISR ========= */
+#if USE_BATCH_ISR == 0                 // ========= 4 µs ISR =========
 
-    /* loop over all chips / voices every 4 µs ----------------------- */
+    // loop over all chips / voices every 4 µs -----------------------
     for (uint8_t c = 0; c < 3; ++c) {
         // select chip once
         if (c != Ym.currentChip) {
@@ -132,7 +137,7 @@ void YMPlayerSerialClass::updateEffects()
         }
 
         for (uint8_t v = 0; v < 3; ++v) {
-            /* -------- SID Voice -------- */
+            //  -------- SID Voice --------
             SidState &s = sid[c][v];
             if (s.active && --s.phase == 0) {
                 s.phase  = s.reload;
@@ -141,7 +146,7 @@ void YMPlayerSerialClass::updateEffects()
                                      s.toggle ? s.level : 0);
             }
 
-            /* -------- Digi‑Drum -------- */
+            //  -------- Digi‑Drum --------
             DigiDrumState &d = dd[c][v];
             if (!d.active) continue;
             if (--d.phase) continue;
@@ -154,9 +159,9 @@ void YMPlayerSerialClass::updateEffects()
         }
     }
 
-#else                                   /* ========= 32 µs ISR ======= */
+#else                                   //  ========= 32 µs ISR =======
 
-    /* 1) update countdowns (logic) --------------------------------- */
+    //  1) update countdowns (logic) ---------------------------------
     for (uint8_t c = 0; c < 3; ++c)
         for (uint8_t v = 0; v < 3; ++v) {
             SidState &s = sid[c][v];
@@ -165,7 +170,7 @@ void YMPlayerSerialClass::updateEffects()
                 else { s.phase += s.reload - TICKS_ISR; s.toggle ^= 1; }
             }
 
-            /* DigiDrumState &d = dd[c][v];
+            DigiDrumState &d = dd[c][v];
             if (d.active) {
                 if (d.phase > TICKS_ISR) d.phase -= TICKS_ISR;
                 else {
@@ -173,14 +178,14 @@ void YMPlayerSerialClass::updateEffects()
                     ++d.pos;
                     if (d.pos >= sampleLen[d.sample]) d.active = false;
                 }
-            } */
+            }
         }
 
-    /* 2) physical writes – one every 4 µs -------------------------- */
+    //  2) physical writes – one every 4 µs --------------------------
     static uint8_t slice = 0;               // 0‑7  (advances each ISR)
 
     for (uint8_t c = 0; c < 3; ++c) {
-        /* ---- change chip only when we really have to ------------ */
+        // ---- change chip only when we really have to ------------
         if (c != Ym.currentChip) {
             Ym.selectYM(c);
             Ym.currentChip = c;
@@ -189,7 +194,7 @@ void YMPlayerSerialClass::updateEffects()
         for (uint8_t v = 0; v < 3; ++v) {
             if (((c * 3 + v) & 7) != slice) continue;   // not this 4‑µs slot
 
-            /* ---- SID write (takes priority over DD) ------------- */
+            //  ---- SID write (takes priority over DD) -------------
             SidState &s = sid[c][v];
             if (s.active) {
                 Ym.writeFast(YM2149::REG_A_LEVEL + v,
@@ -197,16 +202,16 @@ void YMPlayerSerialClass::updateEffects()
                 continue;   // DD uses same register – skip this slot
             }
 
-            /* ---- Digi‑Drum write -------------------------------- */
-            /* DigiDrumState &d = dd[c][v];
+            // ---- Digi‑Drum write --------------------------------
+            DigiDrumState &d = dd[c][v];
             if (d.active) {
                 uint8_t sampleByte = sampleAddress[d.sample][d.pos];
                 Ym.writeFast(YM2149::REG_A_LEVEL + v,
                                      sampleByte & 0x0F);
-            } */
+            }
         }
     }
     slice = (slice + 1) & 0x07;             // next 4‑µs sub‑slot
 
-#endif  /* USE_BATCH_ISR */
+#endif  // USE_BATCH_ISR
 }

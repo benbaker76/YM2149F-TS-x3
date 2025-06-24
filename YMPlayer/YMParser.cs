@@ -1,5 +1,6 @@
 ﻿// benbaker76 (https://github.com/benbaker76)
 
+using LHADecompressor;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -7,7 +8,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using LHADecompressor;
+using static YMPlayer.YMParser;
 
 namespace YMPlayer
 {
@@ -33,6 +34,8 @@ namespace YMPlayer
         private int _frameCount, _frameLoop, _frameRate;
         private TimeSpan _totalTime;
         private byte[] _bytes;
+
+        private readonly List<DigiDrumSample> _digiDrumList = new();
 
         public YMParser(string fileName)
         {
@@ -82,12 +85,50 @@ namespace YMPlayer
                 _artist = ReadNullString(br);
                 _comments = ReadNullString(br);
 
+                byte[] raw;
+
                 if (_digidrumsSamples > 0)
                 {
-                    for (int i = 0; i < _digidrumsSamples; i++)
+                    bool signed = (_songAttributes & (1U << 1)) != 0;   // b1 – signed
+                    bool st4Bits = (_songAttributes & (1U << 2)) != 0;   // b2 – 4‑bit ST
+
+                    for (int i = 0; i < _digidrumsSamples; ++i)
                     {
-                        uint size = Swap(br.ReadUInt32());
-                        br.BaseStream.Seek(size, SeekOrigin.Current);
+                        uint size = Swap(br.ReadUInt32());               // sample length
+
+                        raw = br.ReadBytes((int)size);
+                        if (raw.Length != size)
+                            throw new EndOfStreamException(
+                                $"DigiDrum #{i}: truncated inside file.");
+
+                        // if sample is already in 4‑bit ST format, expand to 8‑bit
+                        if (st4Bits)
+                        {
+                            var tmp = new byte[size * 2];
+                            for (int n = 0; n < size; ++n)
+                            {
+                                byte nyb = raw[n];
+                                tmp[n * 2] = (byte)((nyb >> 4) & 0x0F);
+                                tmp[n * 2 + 1] = (byte)(nyb & 0x0F);
+                            }
+                            raw = tmp;
+                        }
+
+                        // convert *unsigned* → *signed* if the attribute says so
+                        if (!signed)
+                        {
+                            for (int n = 0; n < raw.Length; ++n)
+                                raw[n] = (byte)(raw[n] - 128);
+                        }
+
+                        // Nominal playback rate =   MFP 2 456 kHz / (TP × TC)
+                        // We only store the divider pair so the uploader can decide.
+                        ushort timerCount = Swap(br.ReadUInt16());
+                        byte timerPre = br.ReadByte();
+                        double nominalHz = 2_457_600.0 /
+                                            (PreDivToFactor(timerPre) * timerCount);
+
+                        _digiDrumList.Add(new DigiDrumSample(raw, nominalHz));
                     }
                 }
 
@@ -96,7 +137,7 @@ namespace YMPlayer
 
                 _isYM6 = _type == "YM6!";
 
-                byte[] raw = br.ReadBytes(_frameCount * 16);
+                raw = br.ReadBytes(_frameCount * 16);
                 _bytes = ((_songAttributes & 1) != 0) ? DeInterleave(raw, _frameCount) : raw;
             }
 
@@ -115,6 +156,18 @@ namespace YMPlayer
             return outp;
         }
 
+        private static int PreDivToFactor(int tp) => tp switch
+        {
+            1 => 4,
+            2 => 10,
+            3 => 16,
+            4 => 50,
+            5 => 64,
+            6 => 100,
+            7 => 200,
+            _ => 1
+        };
+
         private string ReadNullString(BinaryReader br)
         {
             var sb = new StringBuilder();
@@ -124,65 +177,66 @@ namespace YMPlayer
             return sb.ToString();
         }
 
-        public IEnumerable<EffectInfo> GetEffects(int frame)
+        public IEnumerable<Effect> GetEffects(int frame)
         {
             if (!_isYM6) yield break;
 
-            // slot‑1  (TS)   : r1 / r6 / r14
-            // slot‑2  (DD)   : r3 / r8 / r15
-            EffectInfo?[] slots =
-            {
-                Decode(frame, 1, 6, 14),
-                Decode(frame, 3, 8, 15)
-            };
+            var e1 = DecodeEffect(frame, 1, 6, 14);
+            if (e1 != null) yield return e1;
 
-            foreach (var fx in slots)
-                if (fx.HasValue) yield return fx.Value;
+            var e2 = DecodeEffect(frame, 3, 8, 15);
+            if (e2 != null) yield return e2;
         }
 
-        private EffectInfo? Decode(int frame, int flagR, int timerR, int countR)
+        private Effect? DecodeEffect(int frame, int flagR, int timerR, int countR)
         {
-            int baseIdx = frame * 16;
+            int idx = frame * 16;
+            byte flag = _bytes[idx + flagR];
 
-            byte flag = _bytes[baseIdx + flagR];
+            int vBits = (flag >> 4) & 0x03;       // 00 = no effect
+            if (vBits == 0) return null;
+            int voice = vBits - 1;                // 0‑2
 
-            /* ----- voice (01=A, 10=B, 11=C) ----- */
-            int vBits  = (flag >> 4) & 0x03;       // r?.5‑4
-            if (vBits == 0) return null;           // no effect in this slot
-            int voice  = vBits - 1;                // 0=A,1=B,2=C
+            int tp = (_bytes[idx + timerR] >> 5) & 0x07;
+            int tc = _bytes[idx + countR];
 
-            /* ----- which effect?  ----- */
-            EffectType type = flagR switch
+            return flagR switch
             {
-                1 => EffectType.SIDVoice,        // slot‑1 → TS
-                3 => EffectType.DigiDrum,          // slot‑2 → DD
-                _ => EffectType.None               // should never happen
+                1 => new SIDEffect(EffectType.SIDVoice, frame, voice, tp, tc, (flag & 0x40) != 0),
+                3 => new DigiDrumEffect(EffectType.DigiDrum, frame, voice, tp, tc, _bytes[idx + 8 + voice] & 0x1F),
+                _ => null
             };
-
-            /* ----- extra flags ----- */
-            bool restart = (type == EffectType.SIDVoice) && ((flag & 0x40) != 0);
-
-            /* ----- timer values ----- */
-            int divisor = (_bytes[baseIdx + timerR] >> 5) & 0x07;   // TP (3 bits)
-            int count   =  _bytes[baseIdx + countR];                // TC (8 bits)
-
-            return new EffectInfo(type, voice, divisor, count, restart);
         }
 
-        public struct EffectInfo
+        public abstract record Effect   // immutable “value‑object” base
         {
-            public EffectType Type;
-            public int Voice;
-            public int TimerDivisor;
-            public int TimerCount;
-            public bool Restart;
+            public EffectType Type { get; init; }  // type of effect
+            public int Frame { get; init; }
+            public int Voice { get; init; }     // 0 = A, 1 = B, 2 = C
+            public int TimerDivisor { get; init; }     // TP  (0‑7)
+            public int TimerCount { get; init; }     // TC  (0‑255)
 
-            public EffectInfo(EffectType type, int voice, int timerDivisor, int timerCount, bool restart)
+            public Effect(EffectType type, int frame, int voice, int timerDivisor, int timerCount)
             {
                 Type = type;
+                Frame = frame;
                 Voice = voice;
                 TimerDivisor = timerDivisor;
                 TimerCount = timerCount;
+            }
+
+            public override string ToString() =>
+                $"{Type.ToString()} (Voice {Voice}, Div {TimerDivisor}, Count {TimerCount})";
+        }
+
+        public sealed record SIDEffect : Effect
+        {
+            public bool Restart { get; init; }           // r1.b6 flag
+            public byte VMax => (byte)(TimerCount & 0x1F);
+
+            public SIDEffect(EffectType type, int frame, int voice, int timerDivisor, int timerCount, bool restart)
+                : base(type, frame, voice, timerDivisor, timerCount)
+            {
                 Restart = restart;
             }
 
@@ -190,11 +244,52 @@ namespace YMPlayer
                 $"{Type.ToString()} (Voice {Voice}, Div {TimerDivisor}, Count {TimerCount} Restart {Restart})";
         }
 
+        public sealed record DigiDrumEffect : Effect
+        {
+            public int SampleIndex { get; init; }        // taken from r8/r9/r10 LSBs
+                                                         // You could also store a pointer/offset into the sample table here
+            public DigiDrumEffect(EffectType type, int frame,int voice, int timerDivisor, int timerCount, int sampleIndex)
+                : base(type, frame,voice, timerDivisor, timerCount)
+            {
+                SampleIndex = sampleIndex;
+            }
+
+            public override string ToString() =>
+                $"{Type.ToString()} (Voice {Voice}, Div {TimerDivisor}, Count {TimerCount} SampleIndex {SampleIndex})";
+        }
+
+        public sealed class DigiDrumSample
+        {
+            /// Raw sample bytes (8‑bit PCM, *signed* if attribute b1 is set,
+            /// otherwise unsigned).  They are always stored in Motorola order.
+            public readonly byte[] Data;
+
+            /// Nominal replay frequency in Hz,    –► see YM spec: samples are
+            /// replayed through MFP timer so they are *always* 8‑bit mono PCM.
+            public readonly double NominalHz;
+
+            public DigiDrumSample(byte[] data, double nominalHz)
+            {
+                Data = data;
+                NominalHz = nominalHz;
+            }
+
+            public string ToString()
+            {
+                string dataInfo = Data.Length > 16
+                    ? $"{Data.Take(16).Select(b => b.ToString("X2")).Aggregate((a, b) => a + " " + b)} ..."
+                    : string.Join(" ", Data.Select(b => b.ToString("X2")));
+
+                return $"DigiDrumSample (NominalHz: {NominalHz}Hz, Data: {dataInfo} Length: {Data.Length} bytes)";
+            }
+        }
+
         private static uint Swap(uint v) =>
             (v >> 24) | ((v >> 8) & 0x0000FF00) | ((v << 8) & 0x00FF0000) | (v << 24);
 
         private static ushort Swap(ushort v) => (ushort)(((v >> 8) & 0x00FF) | ((v << 8) & 0xFF00));
 
+        public IReadOnlyList<DigiDrumSample> DigiDrums => _digiDrumList;
         public bool IsYM6 => _isYM6;
         public string FileName { get { return _fileName; } }
         public string Type { get { return _type; } }

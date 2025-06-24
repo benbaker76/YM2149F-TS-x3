@@ -6,6 +6,23 @@
 #include "Arduino.h"
 #include "YM2149.h"
 
+struct SidState {
+    volatile bool     active  = false;
+    volatile uint8_t  level   = 0;     // 0‑15
+    volatile uint16_t reload  = 0;     // ticks of   4 µs
+    volatile uint16_t phase   = 0;     // countdown  4 µs
+    volatile uint8_t  toggle  = 0;     // 0 / 1
+};
+extern SidState sid[3][3];
+
+struct DigiDrumState {
+    volatile bool     active  = false;
+    volatile uint16_t reload  = 0;      // 4 µs ticks
+    volatile uint16_t phase   = 0;      // countdown (4 µs)
+    volatile uint16_t pos     = 0;      // sample cursor
+    volatile uint8_t  sample  = 0;      // sample # 0‑31
+};
+extern DigiDrumState dd[3][3];
 
 // ----------------------------------------------------------
 // Fast-SID ISR – choose ONE:
@@ -74,26 +91,8 @@ class YMPlayerSerialClass {
         200  // 111 – ÷200
     };
 
-    struct SidState {
-        volatile bool     active  = false;
-        volatile uint8_t  level   = 0;     // 0‑15
-        volatile uint16_t reload  = 0;     // ticks of   4 µs
-        volatile uint16_t phase   = 0;     // countdown  4 µs
-        volatile uint8_t  toggle  = 0;     // 0 / 1
-    };
-    SidState sid[3][3];
-
-    struct DigiDrumState {
-        volatile bool     active  = false;
-        volatile uint16_t reload  = 0;      // 4 µs ticks
-        volatile uint16_t phase   = 0;      // countdown (4 µs)
-        volatile uint16_t pos     = 0;      // sample cursor
-        volatile uint8_t  sample  = 0;      // sample # 0‑31
-    };
-    DigiDrumState dd[3][3];
-
     //─────────────── Enum & prototype ───────────────────────────────────────
-    enum class EffectType : uint8_t { TimerSynth = 0, DigiDrum = 1, Other2 = 2, Other3 = 3, None = 255 };
+    enum class EffectType : uint8_t { SIDVoice = 0, DigiDrum = 1, SinusSID = 2, SyncBuzzer = 3, None = 255 };
 };
 
 typedef YMPlayerSerialClass YMPlayerSerial;

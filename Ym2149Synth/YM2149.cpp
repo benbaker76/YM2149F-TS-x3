@@ -1,6 +1,6 @@
 #include "YM2149.h"
 #include <util/atomic.h>
-#include <avr/io.h>  // Required for direct port manipulation macros
+#include <avr/io.h>
 
 constexpr uint8_t LED_BIT[3] = {
     _BV(PB1),  // D15 → PB1 
@@ -8,9 +8,12 @@ constexpr uint8_t LED_BIT[3] = {
     _BV(PB2)   // D16 → PB2
 };
 
-#ifdef DIRECT_WRITE
+volatile uint8_t YM2149Class::currentChip = 0;
+
 void YM2149Class::begin()
 {
+    currentChip = 255;
+
     DDRD |= _BV(PD0) | _BV(PD1) | _BV(PD4) | _BV(PD7); // D2, D3, D4, D6
     DDRB |= _BV(PB4) | _BV(PB5);                       // D8, D9
     DDRC |= _BV(PC6);                                  // D5
@@ -43,6 +46,55 @@ void YM2149Class::begin()
     PORTB |= _BV(PB1) | _BV(PB2) | _BV(PB3);  // Set HIGH = OFF if active LOW LEDs
 }
 
+void YM2149Class::selectYM(uint8_t chip)
+{
+    chip = 2 - chip;
+
+    PORTF &= ~(SEL_A_BIT | SEL_B_BIT | SEL_C_BIT);
+
+    if (chip & 1) PORTF |= SEL_A_BIT;
+    if (chip & 2) PORTF |= SEL_B_BIT;
+    if (chip & 4) PORTF |= SEL_C_BIT;
+}
+
+void YM2149Class::busWrite(uint8_t value)
+{
+    // --- Build PORTD value (PD0, PD1, PD4, PD7) ---
+    uint8_t portd_mask = _BV(PD0) | _BV(PD1) | _BV(PD4) | _BV(PD7);
+    uint8_t portd_val  =
+        ((value & (1 << 0)) ? _BV(PD1) : 0) |
+        ((value & (1 << 1)) ? _BV(PD0) : 0) |
+        ((value & (1 << 2)) ? _BV(PD4) : 0) |
+        ((value & (1 << 4)) ? _BV(PD7) : 0);
+    PORTD = (PORTD & ~portd_mask) | portd_val;
+
+    // --- Build PORTC value (PC6) ---
+    PORTC = (PORTC & ~_BV(PC6)) | ((value & (1 << 3)) ? _BV(PC6) : 0);
+
+    // --- Build PORTE value (PE6) ---
+    PORTE = (PORTE & ~_BV(PE6)) | ((value & (1 << 5)) ? _BV(PE6) : 0);
+
+    // --- Build PORTB value (PB4, PB5) ---
+    uint8_t portb_mask = _BV(PB4) | _BV(PB5);
+    uint8_t portb_val  =
+        ((value & (1 << 6)) ? _BV(PB4) : 0) |
+        ((value & (1 << 7)) ? _BV(PB5) : 0);
+    PORTB = (PORTB & ~portb_mask) | portb_val;
+}
+
+void YM2149Class::writeFast(uint8_t address, uint8_t value)
+{
+    busWrite(address);             // 4
+    PORTB |=  _BV(PB6);            // 1 – BC1
+    PORTF |=  _BV(PF5);            // 1 – BDIR
+    _NOP(); _NOP(); _NOP(); _NOP();// 4 – 250 ns
+    PORTF &= ~_BV(PF5);            // 1 – BDIR
+    PORTB &= ~_BV(PB6);            // 1 – BC1
+    busWrite(value);               // 4
+    PORTF |=  _BV(PF5);            // 1 – data strobe
+    PORTF &= ~_BV(PF5);            // 1 – finish
+}
+
 void YM2149Class::write(uint8_t chip, uint8_t reg, uint8_t val)
 {
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
@@ -72,77 +124,13 @@ void YM2149Class::write(uint8_t chip, uint8_t reg, uint8_t val)
     }
 }
 
-#else
-void YM2149Class::begin()
-{
-    for (auto pin : DATA_PINS)
-		pinMode(pin, OUTPUT);
-
-    pinMode(PIN_BC1, OUTPUT);
-    pinMode(PIN_BDIR, OUTPUT);
-    pinMode(PIN_SEL_A, OUTPUT);
-    pinMode(PIN_SEL_B, OUTPUT);
-    pinMode(PIN_SEL_C, OUTPUT);
-
-    pinMode(PIN_ENABLE, OUTPUT);
-    digitalWrite(PIN_ENABLE, HIGH);
-
-    for (int i = 0; i < 3; ++i)
-	{
-        pinMode(CHIP_LED[i], OUTPUT);
-        digitalWrite(CHIP_LED[i], HIGH);
-    }
-
-    digitalWrite(PIN_BC1, LOW);
-    digitalWrite(PIN_BDIR, LOW);
-    digitalWrite(PIN_SEL_A, LOW);
-    digitalWrite(PIN_SEL_B, LOW);
-    digitalWrite(PIN_SEL_C, LOW);
-}
-
-void YM2149Class::selectYM(uint8_t chip)
-{
-    chip = 2 - chip;
-
-    digitalWrite(PIN_SEL_A, chip & 1);
-    digitalWrite(PIN_SEL_B, (chip >> 1) & 1);
-    digitalWrite(PIN_SEL_C, (chip >> 2) & 1);
-}
-
-void YM2149Class::busWrite(uint8_t val)
-{
-    for (uint8_t i = 0; i < 8; ++i)
-        digitalWrite(DATA_PINS[i], (val >> i) & 1);
-}
-
-void YM2149Class::write(uint8_t chip, uint8_t reg, uint8_t val)
-{
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-    {
-        selectYM(chip);
-        busWrite(reg & 0x1F);
-        digitalWrite(PIN_BC1, HIGH);
-        digitalWrite(PIN_BDIR, HIGH);
-        delayMicroseconds(1);
-        digitalWrite(PIN_BDIR, LOW);
-        digitalWrite(PIN_BC1, LOW);
-        delayMicroseconds(1);
-
-        busWrite(val);
-        digitalWrite(PIN_BDIR, HIGH);
-        delayMicroseconds(1);
-        digitalWrite(PIN_BDIR, LOW);
-    }
-}
-
-#endif
-
 void YM2149Class::setPin(uint8_t chip, uint8_t pin, bool value)
 {
     pin &= 0x0F;
     uint8_t mask = 1 << (pin & 0x07);
 
-    if (pin >= 8) {
+    if (pin >= 8)
+    {
         // Port B
         if (value)
             portBValue[chip] |= mask;
@@ -150,7 +138,9 @@ void YM2149Class::setPin(uint8_t chip, uint8_t pin, bool value)
             portBValue[chip] &= ~mask;
 
         write(chip, REG_DATAPORT_B, portBValue[chip]);
-    } else {
+    }
+    else
+    {
         // Port A
         if (value)
             portAValue[chip] |= mask;
@@ -165,10 +155,13 @@ uint8_t YM2149Class::getPin(uint8_t chip, uint8_t pin)
 {
     pin &= 0x0F;
 
-    if (pin >= 8) {
+    if (pin >= 8)
+    {
         // Port B
         return (portBValue[chip] >> (pin - 8)) & 0x01;
-    } else {
+    }
+    else
+    {
         // Port A
         return (portAValue[chip] >> pin) & 0x01;
     }
@@ -176,10 +169,13 @@ uint8_t YM2149Class::getPin(uint8_t chip, uint8_t pin)
 
 void YM2149Class::setPort(uint8_t chip, bool port, uint8_t value)
 {
-    if (port) {
+    if (port)
+    {
         portBValue[chip] = value;
         write(chip, REG_DATAPORT_B, value);
-    } else {
+    }
+    else
+    {
         portAValue[chip] = value;
         write(chip, REG_DATAPORT_A, value);
     }
@@ -198,7 +194,6 @@ void YM2149Class::setPortIO(uint8_t chip, bool portAOut, bool portBOut)
     write(chip, REG_MIXER, mixerValue[chip]);
 }
 
-#ifdef DIRECT_WRITE
 void YM2149Class::setLED(uint8_t chip, bool state)
 {
     ledState[chip] = state;
@@ -207,13 +202,6 @@ void YM2149Class::setLED(uint8_t chip, bool state)
     else
         PORTB &= ~LED_BIT[chip];   // turn LED OFF
 }
-#else
-void YM2149Class::setLED(uint8_t chip, bool state)
-{
-    ledState[chip] = state;
-    digitalWrite(CHIP_LED[chip], ledState[chip] ? LED_ON : LED_OFF);
-}
-#endif
 
 bool YM2149Class::getLED(uint8_t chip)
 {
@@ -224,18 +212,24 @@ void YM2149Class::setNote(uint8_t chip, uint8_t voice, float midiNote)
 {
     uint16_t freqVal;
 
-    if (voice != 3) {
+    if (voice != 3)
+    {
         // Convert MIDI note to frequency
         float freq = 440.0f * powf(2.0f, (midiNote - 69.0f) / 12.0f);
 
-        if (voice == 4) {
+        if (voice == 4)
+        {
             // Envelope frequency: 500kHz / (256 * freq)
             freqVal = static_cast<uint16_t>((YM_CLOCK_HZ / (256.0f * freq)) + 0.5f);
-        } else {
+        }
+        else
+        {
             // Tone channels: 500kHz / (16 * freq)
             freqVal = static_cast<uint16_t>((YM_CLOCK_HZ / (16.0f * freq)) + 0.5f);
         }
-    } else {
+    }
+    else
+    {
         // Noise: approximate mapping
         freqVal = constrain(static_cast<uint16_t>(31 - midiNote / 4), 0, 31);
     }
